@@ -1,12 +1,19 @@
-package lrukreplacer
+package cache
 
 import (
 	"container/heap"
 	"errors"
 	"log"
+	cacheNode "lruKReplacer/lru_k_replacer/node"
 	"lruKReplacer/pkg/utils"
 	"sync"
 )
+
+type cacheEntry struct {
+	node      *cacheNode.Node
+	HeapIndex int
+	DllNode   *utils.DllNode
+}
 
 type optimizedCache struct {
 	capacity                   int
@@ -14,14 +21,14 @@ type optimizedCache struct {
 	timestamp                  int64 // global timestamp counter
 
 	// map of key-value pairs: denotes the registry of nodes and its address in the cache
-	data map[int]*node
+	data map[int]*cacheEntry
 
 	// both nodes head and tail keeps track of nodes whose occurrence is less than timestampsRegisterCapacity
 	head *utils.DllNode // head pointer - points to the node is which had most recent access
 	tail *utils.DllNode // tail pointer - points to the node is which has oldest access
 
 	// keeps track of nodes whose occurrence is greater than or equal to timestampsRegisterCapacity
-	minHeap *PriorityQueue
+	minHeap *utils.PriorityQueue[cacheEntry]
 
 	mu sync.Mutex
 }
@@ -29,14 +36,29 @@ type optimizedCache struct {
 var _ ICache = (*optimizedCache)(nil)
 
 func InitOptimizedCache(cacheCapacity, timestampsRegisterCapacity int) *optimizedCache {
-	pq := &PriorityQueue{}
+	pq := &utils.PriorityQueue[cacheEntry]{
+		LessFunc: func(a, b *cacheEntry) bool {
+			return a.node.Register[0] < b.node.Register[0]
+		},
+		SwapFunc: func(a, b *cacheEntry, i, j int) {
+			a.HeapIndex = i
+			b.HeapIndex = j
+		},
+	}
 	heap.Init(pq)
+
+	head := utils.NewDLLNode(nil)
+	tail := utils.NewDLLNode(nil)
+	head.Next = tail
+	tail.Prev = head
 
 	var c = &optimizedCache{
 		capacity:                   cacheCapacity,
 		timestampsRegisterCapacity: timestampsRegisterCapacity,
-		data:                       make(map[int]*node, cacheCapacity),
+		data:                       make(map[int]*cacheEntry, cacheCapacity),
 		minHeap:                    pq,
+		head:                       head,
+		tail:                       tail,
 	}
 
 	return c
@@ -56,41 +78,41 @@ func (oc *optimizedCache) Get(key int) (int, error) {
 	oc.timestamp = oc.timestamp + 1
 
 	// checking if node exists or not
-	node, ok := oc.data[key]
+	entry, ok := oc.data[key]
 	if !ok {
 		// if not exists and since its get operation, return nil
 		return -1, errors.New("key does not exists in cache")
 	}
 
 	// record the new timestamp
-	if err := node.RecordAccess(oc.timestamp); err != nil {
+	if err := recordAccess(entry.node, oc.timestamp); err != nil {
 		return -1, err
 	}
 
 	// now since the timestamp is recorded, we need to check whether it should be kept in dll or
 	// we should move it to heap
-	if len(node.register) == cap(node.register) {
+	if len(entry.node.Register) == cap(entry.node.Register) {
 		// if the capacity is reached, and after reaching capacity we are accessing it first time, just
 		// remove from dll otherwise no operation on dll to be performed
-		if node.dllNode != nil {
-			dllNode := node.dllNode
+		if entry.DllNode != nil {
+			dllNode := entry.DllNode
 			dllNode.Remove()
-			node.dllNode = nil
+			entry.DllNode = nil
 
-			heap.Push(oc.minHeap, &Item{Node: node})
+			heap.Push(oc.minHeap, entry)
 		} else {
 			// push the node to heap
-			heap.Fix(oc.minHeap, node.heapIndex)
+			heap.Fix(oc.minHeap, entry.HeapIndex)
 		}
 	} else {
 		// if the capacity is not reached simple move the node to top as its the hot node for now
 		// in dll
-		dllNode := node.dllNode
+		dllNode := entry.DllNode
 		dllNode.Remove()
 		dllNode.Insert(oc.head)
 	}
 
-	return node.value, nil
+	return entry.node.Value, nil
 }
 
 func (oc *optimizedCache) Set(key int, val int) (int, error) {
@@ -107,31 +129,31 @@ func (oc *optimizedCache) Set(key int, val int) (int, error) {
 	oc.timestamp = oc.timestamp + 1
 
 	// checking if node exists or not
-	node, ok := oc.data[key]
+	entry, ok := oc.data[key]
 	if ok {
 		// if an existing node, just update the value
-		node.value = val
+		entry.node.Value = val
 
 		// record the new access in the node
-		if err := node.RecordAccess(oc.timestamp); err != nil {
+		if err := recordAccess(entry.node, oc.timestamp); err != nil {
 			return -1, err
 		}
 
 		// if the capacity is reached, we should perform similar operation as GET (with
 		// perspective to DLL and Heap)
-		if len(node.register) == cap(node.register) {
-			if node.dllNode != nil {
-				dllNode := node.dllNode
+		if len(entry.node.Register) == cap(entry.node.Register) {
+			if entry.DllNode != nil {
+				dllNode := entry.DllNode
 				dllNode.Remove()
-				node.dllNode = nil
+				entry.DllNode = nil
 
-				heap.Push(oc.minHeap, &Item{Node: node})
+				heap.Push(oc.minHeap, entry)
 			} else {
 				// push the node to minheap
-				heap.Fix(oc.minHeap, node.heapIndex)
+				heap.Fix(oc.minHeap, entry.HeapIndex)
 			}
 		} else {
-			dllNode := node.dllNode
+			dllNode := entry.DllNode
 			dllNode.Remove()
 			dllNode.Insert(oc.head)
 		}
@@ -145,22 +167,22 @@ func (oc *optimizedCache) Set(key int, val int) (int, error) {
 		}
 
 		// since the node is not an existing one, create a new node
-		node = NewNode(key, val, oc.timestampsRegisterCapacity)
+		entry = &cacheEntry{}
+		entry.node = cacheNode.NewNode(key, val, oc.timestampsRegisterCapacity)
 
 		// record the new access in the node
-		if err := node.RecordAccess(oc.timestamp); err != nil {
+		if err := recordAccess(entry.node, oc.timestamp); err != nil {
 			return -1, err
 		}
 
 		// create a new dllNode and capture it in cache - because every new node will land in dll first
-		dllNode := utils.NewDLLNode(node)
+		dllNode := utils.NewDLLNode(entry)
 		dllNode.Insert(oc.head)
-
-		node.dllNode = dllNode
+		entry.DllNode = dllNode
 	}
 
 	// assign the key in the cache
-	oc.data[key] = node
+	oc.data[key] = entry
 
 	return key, nil
 }
@@ -200,21 +222,34 @@ func (oc *optimizedCache) evict() error {
 		dllNode := oc.tail.Prev
 		dllNode.Remove()
 
-		node, ok := dllNode.Value.(*node)
-		if !ok || node == nil {
+		entry, ok := dllNode.Value.(*cacheEntry)
+		if !ok || entry == nil {
 			return errors.New("invalid dll node")
 		}
 
-		delete(oc.data, node.key)
+		delete(oc.data, entry.node.Key)
 		return nil
 	}
 
 	// if no node is present in dll then remove the node from heap as well as cache
 	element := heap.Pop(oc.minHeap)
-	pqItem := element.(*Item)
+	pqItem := element.(*cacheEntry)
 
 	// also delete the node from cache which got polled
-	delete(oc.data, pqItem.Node.key)
+	delete(oc.data, pqItem.node.Key)
 
+	return nil
+}
+
+func recordAccess(n *cacheNode.Node, timestamp int64) error {
+	if err := n.Validate(); err != nil {
+		return err
+	}
+
+	if len(n.Register) == cap(n.Register) {
+		n.Register = n.Register[1:]
+	}
+
+	n.Register = append(n.Register, timestamp)
 	return nil
 }

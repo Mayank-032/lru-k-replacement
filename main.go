@@ -2,13 +2,13 @@ package main
 
 import (
 	"fmt"
-	lrukreplacer "lruKReplacer/lru_k_replacer"
+	lrukreplacer "lruKReplacer/lru_k_replacer/cache"
 )
 
 func main() {
 	var cacheCapacity int = 3
 	var timestampsRegisterCapacity = 2
-	var cache = lrukreplacer.InitCache(cacheCapacity, timestampsRegisterCapacity)
+	var cache = lrukreplacer.InitOptimizedCache(cacheCapacity, timestampsRegisterCapacity)
 
 	var result int
 	var err error

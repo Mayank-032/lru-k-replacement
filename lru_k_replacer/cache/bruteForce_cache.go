@@ -1,9 +1,10 @@
-package lrukreplacer
+package cache
 
 import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	cacheNode "lruKReplacer/lru_k_replacer/node"
 	"math"
 	"sync"
 )
@@ -11,7 +12,7 @@ import (
 type cache struct {
 	capacity                   int
 	timestampsRegisterCapacity int // denotes the k timestamps need to be maintained for a key
-	data                       map[int]*node
+	data                       map[int]*cacheNode.Node
 	timestamp                  int64
 
 	mu sync.Mutex
@@ -23,7 +24,7 @@ func InitCache(cacheCapacity, timestampsRegisterCapacity int) *cache {
 	var c = &cache{
 		capacity:                   cacheCapacity,
 		timestampsRegisterCapacity: timestampsRegisterCapacity,
-		data:                       make(map[int]*node, cacheCapacity),
+		data:                       make(map[int]*cacheNode.Node, cacheCapacity),
 	}
 
 	return c
@@ -41,11 +42,10 @@ func (c *cache) Get(key int) (int, error) {
 
 	c.timestamp = c.timestamp + 1
 
-	var node *node
+	var node *cacheNode.Node
 	var ok bool
 
 	node, ok = c.data[key]
-
 	if !ok {
 		return -1, errors.New("key does not exists in cache")
 	}
@@ -57,7 +57,7 @@ func (c *cache) Get(key int) (int, error) {
 	dataB, _ := json.Marshal(c.data)
 	fmt.Println("cache: ", string(dataB))
 
-	return node.value, nil
+	return node.Value, nil
 }
 
 func (c *cache) Set(key, val int) (int, error) {
@@ -72,12 +72,12 @@ func (c *cache) Set(key, val int) (int, error) {
 
 	c.timestamp = c.timestamp + 1
 
-	var node *node
+	var node *cacheNode.Node
 	var ok bool
 
 	node, ok = c.data[key]
 	if ok {
-		node.value = val
+		node.Value = val
 	} else {
 		if c.isFull() {
 			err := c.evict()
@@ -86,14 +86,14 @@ func (c *cache) Set(key, val int) (int, error) {
 			}
 		}
 
-		node = NewNode(key, val, c.timestampsRegisterCapacity)
+		node = cacheNode.NewNode(key, val, c.timestampsRegisterCapacity)
 	}
 
 	if err := node.RecordAccess(c.timestamp); err != nil {
 		return -1, err
 	}
 
-	c.data[node.key] = node
+	c.data[node.Key] = node
 
 	dataB, _ := json.Marshal(c.data)
 	fmt.Println("cache: ", string(dataB))
@@ -121,33 +121,33 @@ func (c *cache) evict() error {
 
 	var (
 		minMTKTimesAccessed     int64 = int64(math.MaxInt64)
-		minNodeMTKTimesAccessed *node
+		minNodeMTKTimesAccessed *cacheNode.Node
 
 		minLTKTimesAccessed     int64 = int64(math.MaxInt64)
-		minNodeLTKTimesAccessed *node
+		minNodeLTKTimesAccessed *cacheNode.Node
 	)
 
 	for _, node := range c.data {
-		if len(node.register) != cap(node.register) {
-			if node.register[0] < minLTKTimesAccessed {
-				minLTKTimesAccessed = node.register[0]
+		if len(node.Register) != cap(node.Register) {
+			if node.Register[0] < minLTKTimesAccessed {
+				minLTKTimesAccessed = node.Register[0]
 				minNodeLTKTimesAccessed = node
 			}
 		} else {
-			if node.register[0] < minMTKTimesAccessed {
-				minMTKTimesAccessed = node.register[0]
+			if node.Register[0] < minMTKTimesAccessed {
+				minMTKTimesAccessed = node.Register[0]
 				minNodeMTKTimesAccessed = node
 			}
 		}
 	}
 
 	if minLTKTimesAccessed != 0 && minNodeLTKTimesAccessed != nil {
-		delete(c.data, minNodeLTKTimesAccessed.key)
+		delete(c.data, minNodeLTKTimesAccessed.Key)
 		return nil
 	}
 
 	if minMTKTimesAccessed != 0 && minNodeMTKTimesAccessed != nil {
-		delete(c.data, minNodeMTKTimesAccessed.key)
+		delete(c.data, minNodeMTKTimesAccessed.Key)
 		return nil
 	}
 
