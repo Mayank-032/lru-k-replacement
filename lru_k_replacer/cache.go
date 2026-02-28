@@ -36,7 +36,7 @@ func (c *cache) Get(key int) (int, error) {
 	defer c.mu.Unlock()
 
 	if err := c.validate(); err != nil {
-		return 0, err
+		return -1, err
 	}
 
 	c.timestamp = c.timestamp + 1
@@ -47,22 +47,17 @@ func (c *cache) Get(key int) (int, error) {
 	node, ok = c.data[key]
 
 	if !ok {
-		return 0, errors.New("key does not exists in cache")
+		return -1, errors.New("key does not exists in cache")
 	}
 
 	if err := node.RecordAccess(c.timestamp); err != nil {
-		return 0, err
-	}
-
-	value, _, err := node.Get()
-	if err != nil {
-		return 0, err
+		return -1, err
 	}
 
 	dataB, _ := json.Marshal(c.data)
 	fmt.Println("cache: ", string(dataB))
 
-	return value, nil
+	return node.value, nil
 }
 
 func (c *cache) Set(key, val int) (int, error) {
